@@ -2,10 +2,45 @@
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
 ########################################################################################################
 
-import os, sys
+import os
+import sys
+
 import numpy as np
 import torch
 from torch.nn import functional as F
+
+
+# Special logic for RWKV v5
+def load_hf_rwkv5(model_path: str):
+    from model_patches.configuration_rwkv5 import Rwkv5Config
+    from model_patches.hf_rwkv5 import Rwkv5ForCausalLM
+
+    config = Rwkv5Config(num_hidden_layers=32, hidden_size=4096)
+    torch.set_default_dtype(torch.bfloat16)
+    model = Rwkv5ForCausalLM(config)
+    state_dict = torch.load(model_path)
+
+    new_state_dict = {}
+    for key in state_dict:
+        if key == "head.weight":
+            new_state_dict[key] = state_dict[key]
+        else:
+            new_key = f"rwkv.{key}"
+            new_key = (
+                new_key.replace("time_mix_k", "time_mix_key")
+                .replace("time_mix_v", "time_mix_value")
+                .replace("time_mix_g", "time_mix_gate")
+                .replace("time_mix_r", "time_mix_receptance")
+                .replace("ln0", "pre_ln")
+                .replace("att", "attention")
+                .replace("ffn", "feed_forward")
+                .replace("emb", "embeddings")
+            )
+            new_state_dict[new_key] = state_dict[key]
+
+    model.load_state_dict(new_state_dict)
+    model.eval()
+    return model
 
 
 class PIPELINE_ARGS:

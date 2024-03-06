@@ -24,7 +24,6 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
-
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     ModelOutput,
@@ -37,7 +36,6 @@ from transformers.utils import (
 )
 
 from model_patches.configuration_rwkv5 import Rwkv5Config
-
 
 logger = logging.get_logger(__name__)
 

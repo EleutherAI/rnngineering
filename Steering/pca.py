@@ -1,6 +1,6 @@
-from sklearn.decomposition import PCA
-import torch
 import matplotlib.pyplot as plt
+import torch
+from sklearn.decomposition import PCA
 
 layers = [
     0,
