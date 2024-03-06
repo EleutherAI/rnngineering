@@ -1,12 +1,13 @@
+from mamba_ssm.models.config_mamba import MambaConfig
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
-from mamba_ssm.models.config_mamba import MambaConfig
+from torch.nn import functional as F
+from tqdm import tqdm
 from transformers import AutoTokenizer
 import json
-from tqdm import tqdm
 import torch
-from torch.nn import functional as F
-import numpy as np
+
+
 class ActivationAdder:
     def __init__(self):
         self.activations = []
@@ -44,7 +45,7 @@ a_token_id = tokenizer.encode('A')
 b_token_id = tokenizer.encode('B')
 layers = [0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,63]
 
-dataset_path = "../CAA/datasets/generate/survival-instinct/generate_dataset.json"
+dataset_path = "../datasets/generate/survival-instinct/generate_dataset.json"
 with open(dataset_path, 'rb') as fd:
     dataset = json.load(fd)
 
@@ -53,8 +54,8 @@ for prompt in tqdm(dataset, desc="Generating steering vector"):
     msg = prompt['question']
     a_matches = (prompt['answer_matching_behavior'] == '(A)')
     msg = "\x16user\n" + msg + "\x17\n\x16assistant\n"
-    with torch.no_grad():
 
+    with torch.no_grad():
         positive_prompt = msg + "(A)" if a_matches else msg + "(B)"
         pos_activations = [model.backbone.layers[layer].register_forward_hook(actadds[layer].record_activations())
                 for layer in layers]
@@ -70,7 +71,7 @@ for prompt in tqdm(dataset, desc="Generating steering vector"):
 for layer in layers:
     actadds[layer].save_activations(f"slimpj-dpo-survival-instinct_{layer}.pt")
 
-test_dataset_path = "../CAA/datasets/test/survival-instinct/test_dataset_ab.json"
+test_dataset_path = "../datasets/test/survival-instinct/test_dataset_ab.json"
 with open(test_dataset_path, 'rb') as fd:
     test_dataset = json.load(fd)
 
@@ -78,43 +79,42 @@ for layer in layers:
     actadds[layer].load_activations(f"slimpj-dpo-survival-instinct_{layer}.pt")
 results = []
 for layer in layers:
-    for pos_before in [-1]:
-        for mult in [-1,-0.5,-0.1,0,0.1,0.5,1]:
-            average_prob = 0
-            count = 0
+    for mult in [-1,-0.5,-0.1,0,0.1,0.5,1]:
+        average_prob = 0
+        count = 0
 
-            module = model.backbone.layers[layer]
-            matching_prob = 0
-            not_matching_prob = 0
-            correct=0
-            h = module.register_forward_hook(actadds[layer].add_activations(mult=mult/np.abs(pos_before),start_pos=pos_before))
-            #for prompt in tqdm(test_dataset, desc="Processing prompts"):
-            for prompt in test_dataset:
-                count += 1
-                msg = prompt['question']
-                a_matches = (prompt['answer_matching_behavior'] == '(A)')
-                msg = "\x16user\n" + msg + "\x17\n\x16assistant\n("
-                with torch.no_grad():
-                    out = model.forward(torch.tensor(tokenizer.encode(msg)).unsqueeze(0).cuda(device))
+        module = model.backbone.layers[layer]
+        matching_prob = 0
+        not_matching_prob = 0
+        correct=0
+        h = module.register_forward_hook(actadds[layer].add_activations(mult=mult, start_pos=-1))
+        #for prompt in tqdm(test_dataset, desc="Processing prompts"):
+        for prompt in test_dataset:
+            count += 1
+            msg = prompt['question']
+            a_matches = (prompt['answer_matching_behavior'] == '(A)')
+            msg = "\x16user\n" + msg + "\x17\n\x16assistant\n("
+            with torch.no_grad():
+                out = model.forward(torch.tensor(tokenizer.encode(msg)).unsqueeze(0).cuda(device))
 
-                logits = out.logits[0, -1, :]
-                probs = F.softmax(logits.float(), dim=-1).cpu().numpy()
-                a_prob = probs[a_token_id]
-                b_prob = probs[b_token_id]
-                
-                max_prob = F.softmax(logits.float(), dim=-1).argmax().cpu().numpy()
-                if max_prob == a_token_id and a_matches:
-                    correct+=1
-                if max_prob == b_token_id and not a_matches:
-                    correct+=1
-                #print(tokenizer.decode(np.atleast_1d(max_prob)),prompt['answer_matching_behavior'] )
-                behavior_prob = a_prob if a_matches else b_prob
-                average_prob += behavior_prob / (a_prob + b_prob)
-                matching_prob += behavior_prob
-                not_matching_prob += a_prob if not a_matches else b_prob
-            results.append((layer,mult,pos_before,average_prob / count, matching_prob / count, not_matching_prob / count,correct/count))
-            h.remove()
-            print(f"{layer}, {mult}, {average_prob / count}, {matching_prob / count}, {not_matching_prob / count}, {correct/count}")
+            logits = out.logits[0, -1, :]
+            probs = F.softmax(logits.float(), dim=-1).cpu().numpy()
+            a_prob = probs[a_token_id]
+            b_prob = probs[b_token_id]
+            
+            max_prob = F.softmax(logits.float(), dim=-1).argmax().cpu().numpy()
+            if max_prob == a_token_id and a_matches:
+                correct+=1
+            if max_prob == b_token_id and not a_matches:
+                correct+=1
+            #print(tokenizer.decode(np.atleast_1d(max_prob)),prompt['answer_matching_behavior'] )
+            behavior_prob = a_prob if a_matches else b_prob
+            average_prob += behavior_prob / (a_prob + b_prob)
+            matching_prob += behavior_prob
+            not_matching_prob += a_prob if not a_matches else b_prob
+        results.append((layer,mult,-1,average_prob / count, matching_prob / count, not_matching_prob / count,correct/count))
+        h.remove()
+        print(f"{layer}, {mult}, {average_prob / count}, {matching_prob / count}, {not_matching_prob / count}, {correct/count}")
 
 
 import matplotlib.pyplot as plt
