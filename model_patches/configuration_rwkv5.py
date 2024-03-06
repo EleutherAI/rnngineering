@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" RWKV configuration"""
+"""RWKV configuration"""
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
@@ -107,7 +107,9 @@ class Rwkv5Config(PretrainedConfig):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
-        self.attention_hidden_size = attention_hidden_size if attention_hidden_size is not None else hidden_size
+        self.attention_hidden_size = (
+            attention_hidden_size if attention_hidden_size is not None else hidden_size
+        )
         self.num_attention_heads = num_attention_heads
         self.head_size = head_size
         self.intermediate_size = None
@@ -119,5 +121,8 @@ class Rwkv5Config(PretrainedConfig):
         self.eos_token_id = eos_token_id
 
         super().__init__(
-            tie_word_embeddings=tie_word_embeddings, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs
+            tie_word_embeddings=tie_word_embeddings,
+            bos_token_id=bos_token_id,
+            eos_token_id=eos_token_id,
+            **kwargs,
         )

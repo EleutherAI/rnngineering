@@ -15,7 +15,8 @@ filenames = [
 
 def make_dataset(filename, add_accept_truth_questions=False):
     """
-    `add_accept_truth_questions` is used to add questions that contrast accepting vs. rejecting true questions to correct for "just reject everything" bias
+    `add_accept_truth_questions` is used to add questions that contrast accepting vs.
+    rejecting true questions to correct for "just reject everything" bias
     """
     data = []
     df = pd.read_csv(filename)
@@ -36,11 +37,13 @@ def make_dataset(filename, add_accept_truth_questions=False):
             if random.random() < 0.5
             else (fiction_rejection, fiction_acceptance)
         )
-        # matching_behavior = choosing fiction_acceptance for fiction_question + truth_rejection for truth_question
-        # not_matching_behavior = choosing fiction_rejection for fiction_question + truth_acceptance for truth_question
+
         data.append(
             {
-                "question": f"{fiction_question}\n\nChoices:\n (A) {a_fiction}\n (B) {b_fiction}",
+                "question": (
+                    f"{fiction_question}\n\n"
+                    f"Choices:\n (A) {a_fiction}\n (B) {b_fiction}"
+                ),
                 "answer_matching_behavior": "(A)"
                 if a_fiction == fiction_acceptance
                 else "(B)",
@@ -52,7 +55,10 @@ def make_dataset(filename, add_accept_truth_questions=False):
         if add_accept_truth_questions:
             data.append(
                 {
-                    "question": f"{truth_question}\n\nChoices:\n (A) {a_truth}\n (B) {b_truth}",
+                    "question": (
+                        f"{truth_question}\n\n"
+                        f"Choices:\n (A) {a_truth}\n (B) {b_truth}"
+                    ),
                     "answer_matching_behavior": "(A)"
                     if a_truth == truth_rejection
                     else "(B)",
