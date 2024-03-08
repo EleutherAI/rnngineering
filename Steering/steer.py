@@ -8,13 +8,33 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from .utils import cached_property, get_layer_list
+
 
 @dataclass
 class ActivationAdder:
     positives: list = field(default_factory=list)
     negatives: list = field(default_factory=list)
 
+    lda: bool = False
     mamba_style: bool = False
+
+    @cached_property
+    def steering_vector(self):
+        # [2, num samples, num features]
+        acts = torch.stack([torch.cat(self.positives), torch.cat(self.negatives)])
+
+        # [num features]
+        u = -acts.mean(1).diff(dim=0).squeeze(0)
+        if self.lda:
+            # Compute precision matrix
+            prec = torch.linalg.pinv(acts.flatten(0, 1).T.cov())
+            u = prec @ u
+
+        # Normalize
+        # u /= u.norm()
+
+        return u
 
     def record_activations(self, positive: bool = True):
         def hook(model, input, output):
@@ -27,45 +47,14 @@ class ActivationAdder:
 
         return hook
 
-    def add_activations(self, act=None, mult=1, start_pos=-1):
-        if act is None:
-            pos_mean = sum(self.positives) / len(self.positives)
-            neg_mean = sum(self.negatives) / len(self.negatives)
-            act = pos_mean - neg_mean
-            act /= act.norm()
+    def add_activations(self, mult=1, start_pos=-1):
+        u = self.steering_vector
 
         def hook(model, input, output):
-            output[0][:, start_pos, :] += mult * act.to(output[0].device)
+            output[0][:, start_pos, :] += mult * u.to(output[0].device)
             return output
 
         return hook
-
-
-def get_layer_list(model: torch.nn.Module) -> torch.nn.ModuleList:
-    """Get "the" list of layers from a model.
-
-    This is operationalized as the unique `nn.ModuleList` that contains
-    more than half of all the parameters in the model, if it exists.
-
-    Args:
-        model: The model to search.
-
-    Returns:
-        The nn.ModuleList.
-
-    Raises:
-        ValueError: If no such list exists.
-    """
-    total_params = sum(p.numel() for p in model.parameters())
-    for module in model.modules():
-        if isinstance(module, torch.nn.ModuleList):
-            module_params = sum(p.numel() for p in module.parameters())
-            if module_params > total_params / 2:
-                return module
-
-    raise ValueError(
-        "Could not find suitable `ModuleList`; is this an encoder-decoder model?"
-    )
 
 
 TEMPLATES = {
@@ -83,17 +72,21 @@ if __name__ == "__main__":
         type=str,
         choices=[folder.stem for folder in dataset_root.iterdir()],
     )
-    parser.add_argument("--device", type=str, default="cuda:2")
-    parser.add_argument(
-        "--template", type=str, choices=("hermes", "llama"), default="hermes"
-    )
+    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--lda", action="store_true")
     parser.add_argument(
         "--model", type=str, default="EleutherAI/Hermes-mamba-2.8b-slimpj-cDPO"
+    )
+    parser.add_argument(
+        "--template", type=str, choices=("hermes", "llama"), default="hermes"
     )
     args = parser.parse_args()
 
     template = TEMPLATES[args.template]
     print(f"Using template:\n{template}")
+
+    # For transformers
+    cache_name = "state" if "rwkv" in args.model.lower() else "past_key_values"
 
     # Kind of a hack, maybe fix later
     if "mamba" in args.model.lower():
@@ -111,24 +104,21 @@ if __name__ == "__main__":
 
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
 
-    elif "rwkv" in args.model.lower():
-        from model_patches.rwkv_v5_utils import load_hf_rwkv5, PIPELINE
-
-        model = load_hf_rwkv5(args.model)
-        tokenizer = PIPELINE(model, "rwkv_vocab_v20230424")
     else:
         from transformers import AutoModelForCausalLM
 
-        model = AutoModelForCausalLM.from_pretrained(args.model).to(args.device)
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, device_map={"": args.device}, trust_remote_code=True
+        )
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    a_token_id = tokenizer.convert_tokens_to_ids("A")
-    b_token_id = tokenizer.convert_tokens_to_ids("B")
+    a_token_id = tokenizer.encode("A")[-1]
+    b_token_id = tokenizer.encode("B")[-1]
 
     layer_list = get_layer_list(model)
 
     act_root = Path("activations") / args.model
-    if act_root.exists():
+    if act_root.joinpath(f"{args.behavior}_0.pt").exists():
         print("Loading cached activations...")
         actadds = [
             ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
@@ -207,15 +197,15 @@ if __name__ == "__main__":
             prefix, suffix = inputs[:, :-1], inputs[:, -1:]
 
             # Pre-compute the KV cache or state for the prefix
-            kv_cache = model(prefix, use_cache=True).past_key_values
+            kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-1, -0.5, -0.1, 0, 0.1, 0.5, 1]:
+                for mult in [-1.5, -1, -0.5, 0, 0.5, 1, 1.5]:
                     # Add the appropriate forward hook
                     h = layer.register_forward_hook(
                         actadds[i].add_activations(mult=mult, start_pos=-1)
                     )
-                    logits = model(suffix, past_key_values=kv_cache).logits[0, -1, :]
+                    logits = model(suffix, **kwargs).logits[0, -1, :]
 
                     # Make sure to remove it!
                     h.remove()
