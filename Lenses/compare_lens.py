@@ -1,21 +1,19 @@
-from tuned_lens.nn.lenses import TunedLens
 from copy import deepcopy
 from typing import List
 
+import accelerate
 import matplotlib.pyplot as plt
 import numpy as np
-
-import accelerate
 import torch
-from datasets import Dataset
+from mamba_ssm.ops.triton.layernorm import rms_norm_fn
+from nnsight.models.Mamba import Mamba
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer
-
-from nnsight.models.Mamba import Mamba
-from mamba_ssm.ops.triton.layernorm import rms_norm_fn
-
+from tuned_lens.nn.lenses import TunedLens
 from tuned_lens.scripts.ingredients import Model
+
+from datasets import Dataset
 
 accelerator = accelerate.Accelerator(log_with="wandb")
 accelerator.init_trackers(project_name="mamba_lenses")

@@ -3,8 +3,9 @@ Data extracted from https://github.com/wusche1/CAA_hallucination/
 """
 
 import json
-import pandas as pd
 import random
+
+import pandas as pd
 
 filenames = [
     "alluding_questioning.csv",
