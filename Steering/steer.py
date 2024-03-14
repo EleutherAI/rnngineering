@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from .utils import cached_property, get_layer_list
+from utils import cached_property, get_layer_list
 
 
 @dataclass
@@ -55,6 +55,16 @@ class ActivationAdder:
         return hook
 
 
+def change_format(msg,format):
+    if format == "a-b":
+        a_token_id = tokenizer.encode("A")[-1]
+        b_token_id = tokenizer.encode("B")[-1]
+    elif format == "1-2":
+        a_token_id = tokenizer.encode("1")[-1]
+        b_token_id = tokenizer.encode("2")[-1]
+        msg = msg.replace("(A)","(1)").replace("(B)","(2)")
+    return msg,a_token_id,b_token_id
+
 TEMPLATES = {
     "hermes": "\x16user\n{}\x17\n\x16assistant\n(",
     "llama": "[INST] {} [/INST] (",
@@ -73,10 +83,13 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--lda", action="store_true")
     parser.add_argument(
-        "--model", type=str, default="EleutherAI/Hermes-mamba-2.8b-slimpj-cDPO"
+        "--model", type=str, default="EleutherAI/Hermes-btlm-3b-8k"
     )
     parser.add_argument(
         "--template", type=str, choices=("hermes", "llama"), default="hermes"
+    )
+    parser.add_argument(
+        "--format", type=str, choices=("a-b", "1-2"), default="a-b"
     )
     args = parser.parse_args()
 
@@ -187,7 +200,7 @@ if __name__ == "__main__":
         msg = prompt["question"]
         a_matches = prompt["answer_matching_behavior"] == "(A)"
         msg = template.format(msg)
-
+        msg,a_token_id,b_token_id = change_format(msg,args.format)
         inputs = torch.tensor(tokenizer.encode(msg)).unsqueeze(0).to(args.device)
 
         with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
@@ -198,24 +211,29 @@ if __name__ == "__main__":
                 from mamba_ssm.utils.generation import InferenceParams
 
                 # See example in https://github.com/state-spaces/mamba/issues/187
-                params = InferenceParams(max_seqlen=2048, max_batch_size=1)
-                model(prefix, inference_params=params)  # In-place update
+                #params = InferenceParams(max_seqlen=2048, max_batch_size=1)
+                #model(prefix, inference_params=params)  # In-place update
 
-                params.seqlen_offset = prefix.shape[-1]
-                _kwargs = dict(inference_params=params)
+                #params.seqlen_offset = prefix.shape[-1]
+                #_kwargs = dict(inference_params=params)
             else:
                 _kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-1.5, -1, -0.5, 0, 0.5, 1, 1.5]:
+                for mult in [-6, -3,  0,  3, 6]:
                     # Add the appropriate forward hook
+                    start_pos = -3 if is_mamba else -1
                     h = layer.register_forward_hook(
-                        actadds[i].add_activations(mult=mult, start_pos=-1)
+                        actadds[i].add_activations(mult=mult, start_pos=start_pos)
                     )
                     # RNNs in-place modify the state which we don't want here
-                    kwargs = deepcopy(_kwargs) if is_mamba or is_rwkv else _kwargs
+                    #kwargs = deepcopy(_kwargs) if is_mamba or is_rwkv else _kwargs
 
-                    logits = model(suffix, **kwargs).logits[0, -1]
+                    if is_mamba:
+                        logits = model(inputs).logits[0, -1]
+                    else:
+                        kwargs = deepcopy(_kwargs) if is_rwkv else _kwargs
+                        logits = model(suffix, **kwargs).logits[0, -1]
 
                     # Make sure to remove it!
                     h.remove()
@@ -245,7 +263,8 @@ if __name__ == "__main__":
         Path("results")
         / args.model
         / ("lda" if args.lda else "caa")
-        / f"{args.behavior}.csv"
+        / f"{args.behavior}"
+        / f"{args.format}.csv"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     stats.to_csv(path)
