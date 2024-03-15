@@ -49,7 +49,7 @@ class ActivationAdder:
         u = self.steering_vector
 
         def hook(model, input, output):
-            output[0][:, start_pos, :] += mult * u.to(output[0].device)
+            output[0][:, start_pos:, :] += mult * u.to(output[0].device)
             return output
 
         return hook
@@ -90,6 +90,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--format", type=str, choices=("a-b", "1-2"), default="a-b"
+    )
+    parser.add_argument(
+        "--previous",type=int,choices=(-1,-3),default=-1
     )
     args = parser.parse_args()
 
@@ -220,9 +223,9 @@ if __name__ == "__main__":
                 _kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-6, -3,  0,  3, 6]:
+                for mult in [-3,-1.5, -1,-0.5,  0, 0.5, 1, 1.5,3]:
                     # Add the appropriate forward hook
-                    start_pos = -3 if is_mamba else -1
+                    start_pos = args.previous
                     h = layer.register_forward_hook(
                         actadds[i].add_activations(mult=mult, start_pos=start_pos)
                     )
@@ -264,7 +267,7 @@ if __name__ == "__main__":
         / args.model
         / ("lda" if args.lda else "caa")
         / f"{args.behavior}"
-        / f"{args.format}.csv"
+        / f"{args.type}.csv"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     stats.to_csv(path)
