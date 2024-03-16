@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from .utils import cached_property, get_layer_list
+from utils import cached_property, get_layer_list
 
 
 @dataclass
