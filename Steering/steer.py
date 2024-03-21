@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
     # Rows in a dataframe
     records: list[dict] = []
-
+    start_pos = args.previous
     for prompt in tqdm(test_dataset):
         msg = prompt["question"]
         a_matches = prompt["answer_matching_behavior"] == "(A)"
@@ -205,7 +205,7 @@ if __name__ == "__main__":
 
         with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
             # We're only applying the steering vector to the last token
-            prefix, suffix = inputs[:, :-1], inputs[:, -1:]
+            prefix, suffix = inputs[:, :start_pos], inputs[:, start_pos:]
 
             if is_mamba:
                 from mamba_ssm.utils.generation import InferenceParams
@@ -220,9 +220,9 @@ if __name__ == "__main__":
                 _kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-6, -3,  0,  3, 6]:
+                for mult in [-3,-1.5, -0.5,  0, 0.5, 1.5, 3]:
                     # Add the appropriate forward hook
-                    start_pos = -3 if is_mamba else -1
+                    
                     h = layer.register_forward_hook(
                         actadds[i].add_activations(mult=mult, start_pos=start_pos)
                     )
@@ -264,6 +264,7 @@ if __name__ == "__main__":
         / args.model
         / ("lda" if args.lda else "caa")
         / f"{args.behavior}"
+        / f"{abs(args.previous)}"
         / f"{args.format}.csv"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
