@@ -228,9 +228,8 @@ if __name__ == "__main__":
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    a_token_id = tokenizer.encode("A")[-1]
-    b_token_id = tokenizer.encode("B")[-1]
-
+    a_token_id = tokenizer.encode("(A")[-1]
+    b_token_id = tokenizer.encode("(B")[-1]
     layer_list = get_layer_list(model)
 
     act_root = Path("activations") / args.model
@@ -239,15 +238,17 @@ if __name__ == "__main__":
     else:
         act_root = act_root
     print(act_root)
+    
+    # if act_root.joinpath(f"{args.behavior}_state.pt").exists():
+    #     print("Loading cached activations...")
+    #     stateadder = StateAdder(**torch.load(act_root / f"{args.behavior}_state.pt"))
+    #     if args.both:
+    #         actadds = [
+    #             ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
+    #             for layer in range(len(layer_list))
+    #         ]
     if False:
-        if act_root.joinpath(f"{args.behavior}_state.pt").exists():
-            print("Loading cached activations...")
-            stateadder = StateAdder(**torch.load(act_root / f"{args.behavior}_state.pt"))
-            if args.both:
-                actadds = [
-                    ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
-                    for layer in range(len(layer_list))
-                ]
+        print("Loading cached activations...")
     # Create all the activations
     else:
         print("Generating activations...")
@@ -341,31 +342,34 @@ if __name__ == "__main__":
             # We're only applying the steering vector to the last token
             prefix, suffix = inputs[:, :args.previous], inputs[:, args.previous:]
 
-            cache = model(prefix, use_cache=True).cache_params
-
+            prefix_cache = model(prefix, use_cache=True).cache_params
+            
             for i, layer in enumerate(get_layer_list(model)):
                 for mult in [-3,-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5,3.0]:
                     
                     if args.both:
-                         h = layer.register_forward_hook(
-                        actadds[i].add_activations(mult=mult, start_pos=args.previous)
+                        h = layer.register_forward_hook(
+                        actadds[i].add_activations(mult=mult, start_pos=-1)
                     )
                     if abs(args.previous) == 1:
-                        new_cache=stateadder.steer_state(deepcopy(cache), mult, i)
+                        new_cache=stateadder.steer_state(deepcopy(prefix_cache), mult, i)
                         logits = model(suffix, cache_params=new_cache).logits[0, -1]
                     else:
+                        cache = prefix_cache
                         for j in range(abs(args.previous)-1):
                             new_cache=stateadder.steer_state(deepcopy(cache), mult, i)
                             cache = model(suffix[:,j].unsqueeze(0), cache_params=new_cache).cache_params
                         new_cache=stateadder.steer_state(deepcopy(cache), mult, i)
                         logits = model(suffix[:,-1].unsqueeze(0), cache_params=new_cache).logits[0, -1]
+                    
                     if args.both:
                         h.remove()
                     
                     probs = logits.softmax(-1)
                     a_prob = probs[a_token_id].item()
                     b_prob = probs[b_token_id].item()
-
+                    #print top 3 tokens
+                    #print(probs.topk(3).indices)
                     matching_prob = (a_prob if a_matches else b_prob) / (
                         a_prob + b_prob
                     )

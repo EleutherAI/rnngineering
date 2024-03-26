@@ -3,15 +3,44 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
+from transformers import AutoTokenizer,MambaForCausalLM,MambaConfig
+from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
+from transformers import AutoModelForCausalLM
 
 import pandas as pd
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
-
+import math
 from utils import cached_property, get_layer_list
 
+def convert_mamba_to_hf(model_name):
+    original_config = load_config_hf(model_name)
+    original_state_dict = load_state_dict_hf(model_name)
+        
+    mamba_config = MambaConfig()
+    for key in original_config:
+        if hasattr(mamba_config,key):
+            setattr(mamba_config,key,original_config[key])
+        if key == "d_model":
+            setattr(mamba_config,"hidden_size",original_config[key])
+            setattr(mamba_config,"intermediate_size",original_config[key]*2)
+            setattr(mamba_config,"time_step_rank",math.ceil(original_config[key] / 16))
+        if key == "n_layer":
+            setattr(mamba_config,"num_hidden_layers",original_config[key])
+        if key == "vocab_size":
+            vocab_size = original_config[key]
+            pad_vocab_size_multiple = original_config["pad_vocab_size_multiple"]
 
+            if vocab_size % pad_vocab_size_multiple != 0:
+                        vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
+            setattr(mamba_config,"vocab_size",vocab_size)
+    original_state_dict["backbone.embeddings.weight"] = original_state_dict["backbone.embedding.weight"]
+    original_state_dict.pop("backbone.embedding.weight")
+    model = MambaForCausalLM(mamba_config)#AutoModelForCausalLM.from_pretrained("state-spaces/mamba-370m-hf")
+    model.load_state_dict(original_state_dict)
+    model.eval()
+    return model
 @dataclass
 class ActivationAdder:
     positives: list = field(default_factory=list)
@@ -36,7 +65,7 @@ class ActivationAdder:
 
     def record_activations(self, positive: bool = True):
         def hook(model, input, output):
-            act = output[0] + output[1] if self.mamba_style else output[0]
+            act = output if self.mamba_style else output[0]
             act = act.detach()[:, -1, :].cpu()
             if positive:
                 self.positives.append(act)
@@ -49,7 +78,8 @@ class ActivationAdder:
         u = self.steering_vector
 
         def hook(model, input, output):
-            output[0][:, start_pos, :] += mult * u.to(output[0].device)
+            hooked = output if self.mamba_style else output[0]
+            hooked[:, start_pos:, :] += mult * u.to(hooked.device)
             return output
 
         return hook
@@ -57,11 +87,11 @@ class ActivationAdder:
 
 def change_format(msg,format):
     if format == "a-b":
-        a_token_id = tokenizer.encode("A")[-1]
-        b_token_id = tokenizer.encode("B")[-1]
+        a_token_id = tokenizer.encode("(A")[-1]
+        b_token_id = tokenizer.encode("(B")[-1]
     elif format == "1-2":
-        a_token_id = tokenizer.encode("1")[-1]
-        b_token_id = tokenizer.encode("2")[-1]
+        a_token_id = tokenizer.encode("(1")[-1]
+        b_token_id = tokenizer.encode("(2")[-1]
         msg = msg.replace("(A)","(1)").replace("(B)","(2)")
     return msg,a_token_id,b_token_id
 
@@ -91,6 +121,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--format", type=str, choices=("a-b", "1-2"), default="a-b"
     )
+    parser.add_argument("--previous", type=int, default=-1)
+
     args = parser.parse_args()
 
     template = TEMPLATES[args.template]
@@ -101,11 +133,10 @@ if __name__ == "__main__":
     cache_name = "state" if is_rwkv else "past_key_values"
 
     if is_mamba:
-        from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
-
-        # from mamba_ssm.utils.generation import InferenceParams
-
-        model = MambaLMHeadModel.from_pretrained(args.model, device=args.device)
+        if "hf" in args.model:
+            model = AutoModelForCausalLM.from_pretrained(args.model, device=args.device)
+        else :
+            model = convert_mamba_to_hf(args.model).to(args.device)
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
 
     else:
@@ -116,21 +147,23 @@ if __name__ == "__main__":
             device_map={"": args.device},
             torch_dtype="auto",
             trust_remote_code=True,
+            cache_dir="/mnt/ssd-1/hf_cache/hub"
         )
-        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True,cache_dir="/mnt/ssd-1/hf_cache/hub")
 
-    a_token_id = tokenizer.encode("A")[-1]
-    b_token_id = tokenizer.encode("B")[-1]
-
+    a_token_id = tokenizer.encode("(A")[-1]
+    b_token_id = tokenizer.encode("(B")[-1]
     layer_list = get_layer_list(model)
 
     act_root = Path("activations") / args.model
-    if act_root.joinpath(f"{args.behavior}_0.pt").exists():
+    if False:
         print("Loading cached activations...")
-        actadds = [
-            ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
-            for layer in range(len(layer_list))
-        ]
+    # if act_root.joinpath(f"{args.behavior}_0.pt").exists():
+    #     print("Loading cached activations...")
+    #     actadds = [
+    #         ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
+    #         for layer in range(len(layer_list))
+    #     ]
     # Create all the activations
     else:
         print("Generating activations...")
@@ -241,7 +274,9 @@ if __name__ == "__main__":
                     probs = logits.softmax(-1)
                     a_prob = probs[a_token_id].item()
                     b_prob = probs[b_token_id].item()
-
+                    #
+                    #print(a_token_id,b_token_id,probs.topk(3).indices)
+                    
                     matching_prob = (a_prob if a_matches else b_prob) / (
                         a_prob + b_prob
                     )
@@ -255,10 +290,10 @@ if __name__ == "__main__":
                             "nonsense": nonsense_prob,
                         }
                     )
-
+        #print(records)
     df = pd.DataFrame.from_records(records)
     stats = df.groupby(["layer", "multiplier"]).mean()
-
+    print(stats)
     path = (
         Path("results")
         / args.model
