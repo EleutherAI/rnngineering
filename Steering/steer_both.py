@@ -273,7 +273,7 @@ if __name__ == "__main__":
                 _kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-1.5, -1, -0.5, 0, 0.5, 1, 1.5]:
+                for mult in [-3., -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 3.]:
                     # Add the appropriate forward hook
                     h = layer.register_forward_hook(
                         actadds[i].add_activations(mult=mult, start_pos=-1)
