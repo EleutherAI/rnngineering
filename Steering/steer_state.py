@@ -245,7 +245,7 @@ if __name__ == "__main__":
                 _kwargs = {cache_name: model(prefix, use_cache=True)[cache_name]}
 
             for i, layer in enumerate(get_layer_list(model)):
-                for mult in [-1.5, -1, -0.5, 0, 0.5, 1, 1.5]:
+                for mult in [-3., -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 3.]:
                     # RNNs in-place modify the state which we don't want here
                     kwargs = deepcopy(_kwargs) if is_mamba or is_rwkv else _kwargs
                     kwargs[cache_name] = stateadder.steer_state(kwargs[cache_name], mult, i)
