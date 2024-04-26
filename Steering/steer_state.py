@@ -90,7 +90,7 @@ class ActivationAdder:
 
 @dataclass
 class StateAdder:
-    states: dict = field(default_factory=dict )
+    states: dict = field(default_factory=dict)
     
     @cached_property
     def steering_vector(self):
@@ -199,6 +199,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--both", action="store_true"
     )
+    parser.add_argument(
+        "--big", action="store_true"
+    )
     args = parser.parse_args()
 
 
@@ -206,9 +209,7 @@ if __name__ == "__main__":
     print(f"Using template:\n{template}")
 
     is_mamba = "mamba" in args.model.lower()
-    is_rwkv = "rwkv" in args.model.lower()
-    cache_name = "state" if is_rwkv else "past_key_values"
-
+  
     if is_mamba:
         
         # from mamba_ssm.utils.generation import InferenceParams
@@ -228,8 +229,8 @@ if __name__ == "__main__":
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    a_token_id = tokenizer.encode("(A")[-1]
-    b_token_id = tokenizer.encode("(B")[-1]
+    a_token_id = tokenizer.encode("A")[-1]
+    b_token_id = tokenizer.encode("B")[-1]
     layer_list = get_layer_list(model)
 
     act_root = Path("activations") / args.model
@@ -239,17 +240,16 @@ if __name__ == "__main__":
         act_root = act_root
     print(act_root)
     
-    # if act_root.joinpath(f"{args.behavior}_state.pt").exists():
-    #     print("Loading cached activations...")
-    #     stateadder = StateAdder(**torch.load(act_root / f"{args.behavior}_state.pt"))
-    #     if args.both:
-    #         actadds = [
-    #             ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
-    #             for layer in range(len(layer_list))
-    #         ]
-    if False:
+    if act_root.joinpath(f"{args.behavior}_state.pt").exists():
+        #Create all the activations
         print("Loading cached activations...")
-    # Create all the activations
+        stateadder = StateAdder(**torch.load(act_root / f"{args.behavior}_state.pt"))
+        if args.both:
+            actadds = [
+                ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
+                for layer in range(len(layer_list))
+            ]
+    
     else:
         print("Generating activations...")
 
@@ -347,29 +347,35 @@ if __name__ == "__main__":
             for i, layer in enumerate(get_layer_list(model)):
                 for mult in [-3,-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5,3.0]:
                     
+                    if args.big:
+                        state_mult=mult*5
+                    else:
+                        state_mult=mult
+                    
                     if args.both:
                         h = layer.register_forward_hook(
                         actadds[i].add_activations(mult=mult, start_pos=-1)
                     )
                     if abs(args.previous) == 1:
-                        new_cache=stateadder.steer_state(deepcopy(prefix_cache), mult, i)
+                        new_cache=stateadder.steer_state(deepcopy(prefix_cache), state_mult, i)
                         logits = model(suffix, cache_params=new_cache).logits[0, -1]
                     else:
                         cache = prefix_cache
-                        for j in range(abs(args.previous)-1):
-                            new_cache=stateadder.steer_state(deepcopy(cache), mult, i)
-                            cache = model(suffix[:,j].unsqueeze(0), cache_params=new_cache).cache_params
-                        new_cache=stateadder.steer_state(deepcopy(cache), mult, i)
-                        logits = model(suffix[:,-1].unsqueeze(0), cache_params=new_cache).logits[0, -1]
+                        for j in range(abs(args.previous)):
+                            new_cache=stateadder.steer_state(deepcopy(cache), state_mult, i)
+                            output = model(suffix[:,j].unsqueeze(0), cache_params=new_cache)
+                            cache = output.cache_params
+                        
+                    logits = output.logits[0, -1]
                     
                     if args.both:
                         h.remove()
                     
                     probs = logits.softmax(-1)
-                    a_prob = probs[a_token_id].item()
-                    b_prob = probs[b_token_id].item()
+                    a_prob = probs[a_token_id].sum().item()
+                    b_prob = probs[b_token_id].sum().item()
                     #print top 3 tokens
-                    #print(probs.topk(3).indices)
+                    
                     matching_prob = (a_prob if a_matches else b_prob) / (
                         a_prob + b_prob
                     )
@@ -389,6 +395,8 @@ if __name__ == "__main__":
     name = "caa_both" if args.both else "caa_state"
     if args.system:
         args.format = "system"
+    if args.big:
+        args.format = "big"
     path = (
         Path("results")
         / args.model

@@ -87,12 +87,16 @@ class ActivationAdder:
 
 def change_format(msg,format):
     if format == "a-b":
+        #a_token_id = tokenizer.encode("(A")[-1]
+        #b_token_id = tokenizer.encode("(B")[-1]
         a_token_id = tokenizer.encode("(A")[-1]
         b_token_id = tokenizer.encode("(B")[-1]
     elif format == "1-2":
         a_token_id = tokenizer.encode("(1")[-1]
         b_token_id = tokenizer.encode("(2")[-1]
         msg = msg.replace("(A)","(1)").replace("(B)","(2)")
+    #print(a_token_id,b_token_id)
+    
     return msg,a_token_id,b_token_id
 
 TEMPLATES = {
@@ -151,19 +155,16 @@ if __name__ == "__main__":
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True,cache_dir="/mnt/ssd-1/hf_cache/hub")
 
-    a_token_id = tokenizer.encode("(A")[-1]
-    b_token_id = tokenizer.encode("(B")[-1]
+    
     layer_list = get_layer_list(model)
 
     act_root = Path("activations") / args.model
-    if False:
-        print("Loading cached activations...")
-    # if act_root.joinpath(f"{args.behavior}_0.pt").exists():
-    #     print("Loading cached activations...")
-    #     actadds = [
-    #         ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
-    #         for layer in range(len(layer_list))
-    #     ]
+    if act_root.joinpath(f"{args.behavior}_0.pt").exists():
+         print("Loading cached activations...")
+         actadds = [
+             ActivationAdder(**torch.load(act_root / f"{args.behavior}_{layer}.pt"))
+             for layer in range(len(layer_list))
+         ]
     # Create all the activations
     else:
         print("Generating activations...")
@@ -272,16 +273,19 @@ if __name__ == "__main__":
                     h.remove()
 
                     probs = logits.softmax(-1)
-                    a_prob = probs[a_token_id].item()
-                    b_prob = probs[b_token_id].item()
-                    #
-                    #print(a_token_id,b_token_id,probs.topk(3).indices)
-                    
+                    a_prob = probs[a_token_id].sum().item()
+                    b_prob = probs[b_token_id].sum().item()
+
                     matching_prob = (a_prob if a_matches else b_prob) / (
                         a_prob + b_prob
                     )
                     nonsense_prob = 1 - (a_prob + b_prob)
-
+                    if nonsense_prob>0.1:
+                        # print(nonsense_prob)
+                        # print(a_token_id,b_token_id)
+                    
+                        # print(tokenizer.decode(probs.sort(descending=True).indices[:3].tolist()),probs.sort(descending=True).indices[:3],probs.sort(descending=True)[:3])
+                    
                     records.append(
                         {
                             "layer": i,
